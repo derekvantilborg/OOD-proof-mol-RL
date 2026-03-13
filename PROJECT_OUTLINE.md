@@ -217,7 +217,7 @@ Compare the two conditions across the following metrics (tracked over RL steps):
 | Training data loading | Grain + HDF5 (h5py) | Chunked reads from disk; Grain handles shuffling, batching, prefetching |
 | Experiment tracking | Weights & Biases | Logging RL curves, generated molecules, metrics |
 | Visualisation | plotnine | Python ggplot2 clone for publication-quality figures |
-| Hardware | Apple M4 MacBook Pro | JAX Metal backend; budget ~1 day for generator pretraining |
+| Hardware | Apple M4 MacBook Pro | JAX MPS backend via [jax-mps](https://github.com/tillahoffmann/jax-mps) (MLX-backed PJRT plugin); budget ~1 day for generator pretraining |
 
 ### Data Loading Strategy
 
@@ -375,7 +375,7 @@ unfamiliar-rl/
 | Unfamiliarity score not discriminative | Sanity-check on held-out OOD molecules before running RL |
 | RL doesn't converge / mode collapses | Start with literature σ values; ensure prior KL penalty is active |
 | Unfamiliarity weighting too aggressive → agent stuck | Tune β carefully; start with small values and increase; can fall back to hard filtering as an alternative |
-| JAX Metal backend instability on Apple Silicon | Pin JAX version; fall back to CPU if needed (slower but stable) |
+| jax-mps MPS backend instability on Apple Silicon | Pin jax + jaxlib to 0.9.x (matching jax-mps build); fall back to CPU if needed (slower but stable) |
 
 
 ## Success Criteria
