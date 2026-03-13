@@ -21,6 +21,8 @@ from rdkit.Chem import (
 )
 from rdkit.Chem.AllChem import ReplaceSubstructs
 from rdkit.Chem.SaltRemover import SaltRemover
+import jax.numpy as jnp
+from jax import vmap
 
 from molrl.chem_constants import COMMON_SOLVENTS, SMARTS_NEUTRALIZATION_PATTERNS, SMARTS_COMMON_SALTS
 
@@ -31,6 +33,16 @@ with warnings.catch_warnings():
     warnings.filterwarnings('ignore', category=DeprecationWarning, module='rdkit')
     from rdkit.Chem.MolStandardize import rdMolStandardize
 
+
+def tanimoto(a, b):
+    dot = jnp.dot(a, b)
+    return dot / (a.sum() + b.sum() - dot)
+
+# do fps = jnp.array(fps, dtype=jnp.float32) first
+tanimoto_one_to_many = vmap(tanimoto, (None, 0))
+
+# do fps = jnp.array(fps, dtype=jnp.float32) first
+tanimoto_pairwise = vmap(vmap(tanimoto, (None, 0)), (0, None))
 
 
 def fetch_chembl_bioactivity(
@@ -516,4 +528,54 @@ def cleaning_pipeline(smiles: list[str]) -> tuple[list[str], list[str]]:
 
     return standardized_smiles, statuses
 
+
+def scaffold_split(
+    df: pd.DataFrame,
+    smiles_col: str = 'standardized_smiles',
+    test_size: float = 0.2,
+    scaffold_type: str = 'bemis_murcko',
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Scaffold-split a DataFrame into train and test sets.
+
+    Groups molecules by their Bemis-Murcko scaffold, then greedily assigns
+    scaffold groups to test until the target fraction is met — so no scaffold
+    appears in both splits. Scaffold groups are sorted largest-first for
+    efficient packing. Ringless molecules (empty scaffold) always go to train.
+
+    Args:
+        df:            DataFrame containing at least the SMILES column.
+        smiles_col:    Name of the column holding SMILES strings.
+        test_size:     Fraction of molecules to place in the test set.
+        scaffold_type: Passed to ``get_scaffold``; 'bemis_murcko' (default),
+                       'generic', or 'cyclic_skeleton'.
+
+    Returns:
+        (train_df, test_df) — two DataFrames with reset indices.
+    """
+    from collections import defaultdict
+
+    # Map scaffold SMILES → list of positional indices; ringless → None key
+    scaffold_to_indices: dict[str | None, list[int]] = defaultdict(list)
+    for pos, smi in enumerate(df[smiles_col].tolist()):
+        scaffold_mol = get_scaffold(smi, scaffold_type=scaffold_type)
+        if scaffold_mol is None or scaffold_mol.GetNumAtoms() == 0:
+            scaffold_smi = None  # ringless — goes to train
+        else:
+            scaffold_smi = Chem.MolToSmiles(scaffold_mol)
+        scaffold_to_indices[scaffold_smi].append(pos)
+
+    # Ringless molecules always go to train
+    train_idx: list[int] = list(scaffold_to_indices.pop(None, []))
+    test_idx: list[int] = []
+
+    # Assign remaining scaffold groups greedily, smallest first (rare/novel scaffolds → test)
+    n_test_target = int(len(df) * test_size)
+    groups = sorted(scaffold_to_indices.values(), key=len, reverse=False)
+    for group in groups:
+        if len(test_idx) < n_test_target:
+            test_idx.extend(group)
+        else:
+            train_idx.extend(group)
+
+    return df.iloc[train_idx].reset_index(drop=True), df.iloc[test_idx].reset_index(drop=True)
 
