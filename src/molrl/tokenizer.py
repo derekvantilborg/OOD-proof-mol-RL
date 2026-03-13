@@ -89,6 +89,15 @@ def encode_smiles_list(
     return arr, valid_smiles, failed
 
 
+def is_tokenizable(smi: str) -> bool:
+    """Return True if the SMILES can be fully encoded with the current vocab."""
+    try:
+        smiles_to_encoding(smi)
+        return True
+    except TokenizationError:
+        return False
+
+
 def encoding_to_smiles(encoding: list[int] | np.ndarray) -> Optional[str]:
     """Decode a token-index vector back to a SMILES string.
 
