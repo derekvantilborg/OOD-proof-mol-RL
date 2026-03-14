@@ -303,13 +303,14 @@ unfamiliar-rl/
     │   ├── oracle_test.h5             # EGFR test split, integer-encoded + labels
     │   └── vocabulary.json            # Token ↔ index mapping
     │
-    ├── step_2_pretrain_autoencoder/
+    ├── step_2_pretrain_generator/
+    │   ├── pretrain_transformer.ipynb  # Transformer pretraining on filtered ChEMBL corpus
+    │   └── checkpoints/               # Orbax checkpoints for pretrained prior
+    │
+    ├── step_23_pretrain_autoencoder/
     │   ├── pretrain_ae.ipynb           # AE pretraining on filtered ChEMBL corpus
     │   └── checkpoints/               # Orbax checkpoints for pretrained encoder + decoder
     │
-    ├── step_3_pretrain_generator/
-    │   ├── pretrain_transformer.ipynb  # Transformer pretraining on filtered ChEMBL corpus
-    │   └── checkpoints/               # Orbax checkpoints for pretrained prior
     │
     ├── step_4_train_oracle/
     │   ├── train_oracle.ipynb          # Prediction head pretraining + joint fine-tuning + HPO
