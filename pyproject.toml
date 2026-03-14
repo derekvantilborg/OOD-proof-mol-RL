@@ -7,37 +7,31 @@ requires-python = ">=3.11"
 dependencies = [
     # JAX ecosystem
     "jax",
-    "jax-mps",          # Apple Silicon MPS/MLX backend (via PJRT plugin)
-    "flax",             # Flax NNX
-    "optax",            # JAX optimisers
+    "jax-mps", # Apple Silicon MPS/MLX backend (via PJRT plugin)
+    "flax", # Flax NNX
+    "optax", # JAX optimisers
     "orbax-checkpoint", # JAX-native checkpointing
-
     # Hyperparameter optimisation
     "optuna",
-
     # Classical ML baseline
     "scikit-learn",
-
     # Cheminformatics
     "rdkit",
-
+    "chembl_webresource_client",
     # Data wrangling
     "polars",
     "pandas",
-
     # Data loading
     "h5py",
-    "grain",            # Google DeepMind Grain — chunked HDF5 + prefetching
-
+    "grain", # Google DeepMind Grain — chunked HDF5 + prefetching
     # Experiment tracking
     "wandb",
-
     # Visualisation
     "plotnine",
-
     # Utilities
     "numpy",
     "pyyaml",
+    "tqdm>=4.67.3",
 ]
 
 [project.optional-dependencies]
@@ -46,6 +40,7 @@ dev = [
     "ipykernel",
     "jupyter",
     "nbformat",
+    "nbconvert",
 ]
 
 [build-system]
