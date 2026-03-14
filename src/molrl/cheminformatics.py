@@ -23,6 +23,7 @@ from rdkit.Chem.AllChem import ReplaceSubstructs
 from rdkit.Chem.SaltRemover import SaltRemover
 import jax.numpy as jnp
 from jax import vmap
+from tqdm.auto import tqdm
 
 from molrl.chem_constants import COMMON_SOLVENTS, SMARTS_NEUTRALIZATION_PATTERNS, SMARTS_COMMON_SALTS
 
@@ -147,13 +148,28 @@ def get_scaffold(smiles: str, scaffold_type: str = 'bemis_murcko') -> Mol:
     return scaffold
 
 
-def calculate_ecfps(smiles: List[str], radius: int = 2, nbits: int = 2048, 
-                   as_dict: bool = False) -> Union[np.ndarray, Dict[str, np.ndarray]]:
-    """Calculate ECFP fingerprints for multiple SMILES."""    
+def _ecfp_chunk_worker(smiles_chunk: List[str], radius: int, nbits: int) -> np.ndarray:
+    """Process a chunk of SMILES — generator created once per chunk."""
     mfpgen = rdFingerprintGenerator.GetMorganGenerator(radius=radius, fpSize=nbits)
-
-    fps = [mfpgen.GetFingerprint(MolFromSmiles(smi)) for smi in smiles]
+    fps = []
+    for smi in smiles_chunk:
+        mol = MolFromSmiles(smi)
+        fps.append(np.array(mfpgen.GetFingerprint(mol)) if mol is not None else np.zeros(nbits, dtype=np.uint8))
     return np.array(fps)
+
+
+def calculate_ecfps(smiles: List[str], radius: int = 2, nbits: int = 2048,
+                    n_jobs: int = -1, chunk_size: int = 100) -> np.ndarray:
+    """Calculate ECFP fingerprints for multiple SMILES using multiprocessing."""
+    from multiprocessing import Pool, cpu_count
+    from functools import partial
+
+    chunks = [smiles[i:i + chunk_size] for i in range(0, len(smiles), chunk_size)]
+    n_workers = cpu_count() if n_jobs == -1 else n_jobs
+    worker = partial(_ecfp_chunk_worker, radius=radius, nbits=nbits)
+    with Pool(processes=n_workers) as pool:
+        results = pool.map(worker, chunks)
+    return np.concatenate(results, axis=0)
 
 
 def is_common_solvent_fragment(smiles_frag: str) -> bool:
@@ -273,7 +289,7 @@ def defragment_smiles(smi: str, keep_largest_fragment: bool = True) -> Tuple[Opt
         return None, f"fail: Defragmentation error - {str(e)}"
 
 
-def normalize_functional_groups(smi: str) -> Tuple[Optional[str], str]:
+def normalize_functional_groups(smi: str, func_group_normalizer: rdMolStandardize.Normalizer = None) -> Tuple[Optional[str], str]:
     """
     Functional Group Normalization
     Standardize nitro groups, N-oxides, azides, etc.
@@ -283,7 +299,9 @@ def normalize_functional_groups(smi: str) -> Tuple[Optional[str], str]:
         return None, "fail: Cannot parse SMILES"
     
     try:
-        mol = rdMolStandardize.Normalizer().normalize(mol)
+        if func_group_normalizer is None:
+            func_group_normalizer = rdMolStandardize.Normalizer()
+        mol = func_group_normalizer.normalize(mol)
         smi_norm = MolToSmiles(mol, canonical=True, isomericSmiles=True)
         return smi_norm, "pass"
     except Exception as e:
@@ -307,7 +325,7 @@ def reionize_smiles(smi: str) -> Tuple[Optional[str], str]:
         return None, f"fail: Reionization error - {str(e)}"
 
 
-def neutralize_smiles(smi: str) -> Tuple[Optional[str], str]:
+def neutralize_smiles(smi: str, neutralization_reactions = None) -> Tuple[Optional[str], str]:
     """
     Charge Neutralization
     Convert charged species to neutral forms where appropriate.
@@ -318,8 +336,9 @@ def neutralize_smiles(smi: str) -> Tuple[Optional[str], str]:
     
     try:
 
-        neutralization_reactions = [(MolFromSmarts(x), MolFromSmiles(y, False)) 
-                                    for x, y in SMARTS_NEUTRALIZATION_PATTERNS]
+        if neutralization_reactions is None:
+            neutralization_reactions = [(MolFromSmarts(x), MolFromSmiles(y, False)) 
+                                        for x, y in SMARTS_NEUTRALIZATION_PATTERNS]
 
         for reactant, product in neutralization_reactions:
             while mol.HasSubstructMatch(reactant):
@@ -333,7 +352,7 @@ def neutralize_smiles(smi: str) -> Tuple[Optional[str], str]:
         return None, f"fail: Neutralization error - {str(e)}"
 
 
-def canonicalize_tautomers(smi: str) -> Tuple[Optional[str], str]:
+def canonicalize_tautomers(smi: str, tautomer_enumerator: rdMolStandardize.TautomerEnumerator = None) -> Tuple[Optional[str], str]:
     """
     Tautomer Canonicalization 
     Standardize to RDKit's canonical tautomer.
@@ -346,7 +365,10 @@ def canonicalize_tautomers(smi: str) -> Tuple[Optional[str], str]:
     try:
         has_stereo_input = '@' in smi or '/' in smi or '\\' in smi
         
-        can_mol = rdMolStandardize.TautomerEnumerator().Canonicalize(mol)
+        if tautomer_enumerator is None:
+            tautomer_enumerator = rdMolStandardize.TautomerEnumerator()
+        
+        can_mol = tautomer_enumerator.Canonicalize(mol)
         canonical_smiles = MolToSmiles(can_mol, canonical=True, isomericSmiles=True)
         
         has_stereo_output = '@' in canonical_smiles or '/' in canonical_smiles or '\\' in canonical_smiles
@@ -398,9 +420,103 @@ def validate_smiles(smi: str) -> Tuple[Optional[str], str]:
     return smi, "pass"
 
 
-def cleaning_pipeline(smiles: list[str]) -> tuple[list[str], list[str]]:
+def _cleaning_pipeline_chunk_worker(args: tuple) -> tuple[list, list]:
+    """Process a chunk of SMILES through the full cleaning pipeline.
+    
+    Takes a tuple (smiles_chunk, skip_tautomer_canonicalization) so it is
+    compatible with pool.imap. All RDKit stateful objects are created once
+    per chunk to avoid pickling issues across process boundaries.
     """
+    from rdkit.Chem.MolStandardize import rdMolStandardize as _rdMolStd
 
+    smiles_chunk, skip_tautomer_canonicalization = args
+
+    RDLogger.DisableLog('rdApp.*')
+
+    # Create once per chunk
+    tautomer_enumerator = _rdMolStd.TautomerEnumerator()
+    neutralization_reactions = [(MolFromSmarts(x), MolFromSmiles(y, False))
+                                for x, y in SMARTS_NEUTRALIZATION_PATTERNS]
+    func_group_normalizer = _rdMolStd.Normalizer()
+
+    standardized_smiles = []
+    statuses = []
+
+    for smi in smiles_chunk:
+        annotations = []
+
+        smi, status = canonicalize_smiles(smi)
+        if status != "pass":
+            standardized_smiles.append(None); statuses.append(status); continue
+
+        smi, status = remove_salts(smi)
+        if status != "pass":
+            standardized_smiles.append(None); statuses.append(status); continue
+
+        smi, status = remove_solvents(smi)
+        if status != "pass":
+            standardized_smiles.append(None); statuses.append(status); continue
+
+        smi, status = defragment_smiles(smi)
+        if status != "pass":
+            standardized_smiles.append(None); statuses.append(status); continue
+
+        if '.' in smi:
+            annotations.append("still fragmented")
+
+        smi, status = normalize_functional_groups(smi, func_group_normalizer)
+        if status != "pass":
+            standardized_smiles.append(None); statuses.append(status); continue
+
+        smi, status = reionize_smiles(smi)
+        if status != "pass":
+            standardized_smiles.append(None); statuses.append(status); continue
+
+        smi, status = neutralize_smiles(smi, neutralization_reactions)
+        if status != "pass":
+            standardized_smiles.append(None); statuses.append(status); continue
+
+        mol_check = MolFromSmiles(smi)
+        if mol_check is not None:
+            if any(atom.GetFormalCharge() != 0 for atom in mol_check.GetAtoms()):
+                annotations.append("still has charged atoms after neutralization")
+
+        if not skip_tautomer_canonicalization:
+            smi, status = canonicalize_tautomers(smi, tautomer_enumerator)
+            if not status.startswith("pass"):
+                standardized_smiles.append(None); statuses.append(status); continue
+
+        smi, status = flatten_stereochemistry(smi)
+        if status != "pass":
+            standardized_smiles.append(None); statuses.append(status); continue
+
+        mol_check = MolFromSmiles(smi)
+        if mol_check is not None:
+            metal_symbols = {
+                'Li', 'Be', 'B', 'Na', 'Mg', 'Al', 'Si', 'K', 'Ca', 'Sc', 'Ti', 'V', 'Cr', 'Mn',
+                'Fe', 'Co', 'Ni', 'Cu', 'Zn', 'Ga', 'Ge', 'As', 'Se', 'Rb', 'Sr', 'Y', 'Zr', 'Nb', 'Mo',
+                'Tc', 'Ru', 'Rh', 'Pd', 'Ag', 'Cd', 'In', 'Sn', 'Sb', 'Te', 'Cs', 'Ba', 'La', 'Ce',
+                'Pr', 'Nd', 'Pm', 'Sm', 'Eu', 'Gd', 'Tb', 'Dy', 'Ho', 'Er', 'Tm', 'Yb',
+                'Lu', 'Hf', 'Ta', 'W', 'Re', 'Os', 'Ir', 'Pt', 'Au', 'Hg', 'Tl', 'Pb',
+                'Bi', 'Po', 'At', 'Fr', 'Ra', 'Ac', 'Th', 'Pa', 'U'
+            }
+            if any(atom.GetSymbol() in metal_symbols for atom in mol_check.GetAtoms()):
+                annotations.append("contains metal/metalloid")
+
+        smi, status = validate_smiles(smi)
+        standardized_smiles.append(smi)
+        statuses.append(f"pass: {', '.join(annotations)}" if status == "pass" and annotations else status)
+
+    return standardized_smiles, statuses
+
+
+def cleaning_pipeline(
+    smiles: list[str],
+    skip_tautomer_canonicalization: bool = False,
+    n_jobs: int = -1,
+    chunk_size: int = 100,
+) -> tuple[list[str], list[str]]:
+    """
     - Canonicalization
     - Salt removal
     - Solvent removal
@@ -408,125 +524,30 @@ def cleaning_pipeline(smiles: list[str]) -> tuple[list[str], list[str]]:
     - Functional group normalization
     - Reionization
     - Charge neutralization
-    - Tautomer canonicalization
+    - Tautomer canonicalization  (skip with skip_tautomer_canonicalization=True)
     - Stereochemistry flattening
     - Final validation
-
     """
-    # start cleaning the data
-    standardized_smiles = []
-    statuses = []
+    from multiprocessing import Pool, cpu_count
 
-    # Suppress annoying RDKit warnings
-    RDLogger.DisableLog('rdApp.*')
-    
-    for smi in smiles:
-        annotations = []  # Track issues that need attention
-        original_smi = smi  
+    chunks = [
+        (smiles[i:i + chunk_size], skip_tautomer_canonicalization)
+        for i in range(0, len(smiles), chunk_size)
+    ]
+    n_workers = cpu_count() if n_jobs == -1 else n_jobs
 
-        # Step 1: Canonicalize
-        smi, status = canonicalize_smiles(smi)
-        if status != "pass":
-            standardized_smiles.append(None)
-            statuses.append(status)
-            continue
-        
-        # Step 2: Remove salts
-        smi, status = remove_salts(smi)
-        if status != "pass":
-            standardized_smiles.append(None)
-            statuses.append(status)
-            continue
-        
-        # Step 3: Remove solvents
-        smi, status = remove_solvents(smi)
-        if status != "pass":
-            standardized_smiles.append(None)
-            statuses.append(status)
-            continue
-        
-        # Step 4: Defragment
-        smi, status = defragment_smiles(smi)
-        if status != "pass":
-            standardized_smiles.append(None)
-            statuses.append(status)
-            continue
-        
-        # Check if still fragmented after defragmentation
-        if '.' in smi:
-            annotations.append("still fragmented")
-        
-        # Step 5: Normalize functional groups
-        smi, status = normalize_functional_groups(smi)
-        if status != "pass":
-            standardized_smiles.append(None)
-            statuses.append(status)
-            continue
-        
-        # Step 6: Reionize
-        smi, status = reionize_smiles(smi)
-        if status != "pass":
-            standardized_smiles.append(None)
-            statuses.append(status)
-            continue
-        
-        # Step 7: Neutralize
-        smi, status = neutralize_smiles(smi)
-        if status != "pass":
-            standardized_smiles.append(None)
-            statuses.append(status)
-            continue
-        
-        # Check if still charged after neutralization - annotate if any charged atoms
-        mol_check = MolFromSmiles(smi)
-        if mol_check is not None:
-            charged_atoms = [atom for atom in mol_check.GetAtoms() if atom.GetFormalCharge() != 0]
-            if charged_atoms:
-                annotations.append("still has charged atoms after neutralization")
-        
-        # Step 8: Canonicalize tautomer
-        smi, status = canonicalize_tautomers(smi)
-        # Allow pass or pass with warnings to continue
-        if not status.startswith("pass"):
-            standardized_smiles.append(None)
-            statuses.append(status)
-            continue
-        
-        # Step 9: Flatten stereochemistry
-        smi, status = flatten_stereochemistry(smi)
-        if status != "pass":
-            standardized_smiles.append(None)
-            statuses.append(status)
-            continue
-        
-        # Check for metals/metalloids
-        mol_check = MolFromSmiles(smi)
-        if mol_check is not None:
-            metal_symbols = [
-                'Li', 'Be', 'B', 'Na', 'Mg', 'Al', 'Si', 'K', 'Ca', 'Sc', 'Ti', 'V', 'Cr', 'Mn', 
-                'Fe', 'Co', 'Ni', 'Cu', 'Zn', 'Ga', 'Ge', 'As', 'Se', 'Rb', 'Sr', 'Y', 'Zr', 'Nb', 'Mo',
-                'Tc', 'Ru', 'Rh', 'Pd', 'Ag', 'Cd', 'In', 'Sn', 'Sb', 'Te', 'Cs', 'Ba', 'La', 'Ce',
-                'Pr', 'Nd', 'Pm', 'Sm', 'Eu', 'Gd', 'Tb', 'Dy', 'Ho', 'Er', 'Tm', 'Yb',
-                'Lu', 'Hf', 'Ta', 'W', 'Re', 'Os', 'Ir', 'Pt', 'Au', 'Hg', 'Tl', 'Pb',
-                'Bi', 'Po', 'At', 'Fr', 'Ra', 'Ac', 'Th', 'Pa', 'U'
-            ]
-            for atom in mol_check.GetAtoms():
-                if atom.GetSymbol() in metal_symbols:
-                    annotations.append("contains metal/metalloid")
-                    break
-        
-        # Step 12: Final validation
-        smi, status = validate_smiles(smi)
-        
-        standardized_smiles.append(smi)
-        
-        # Add annotations to status if molecule passed
-        if status == "pass" and annotations:
-            statuses.append(f"pass: {', '.join(annotations)}")
-        else:
-            statuses.append(status)
+    all_smiles: list[str] = []
+    all_statuses: list[str] = []
+    with Pool(processes=n_workers) as pool:
+        for chunk_smiles, chunk_statuses in tqdm(
+            pool.imap(_cleaning_pipeline_chunk_worker, chunks),
+            total=len(chunks),
+            desc="Cleaning SMILES",
+        ):
+            all_smiles.extend(chunk_smiles)
+            all_statuses.extend(chunk_statuses)
 
-    return standardized_smiles, statuses
+    return all_smiles, all_statuses
 
 
 def scaffold_split(
@@ -578,4 +599,37 @@ def scaffold_split(
             train_idx.extend(group)
 
     return df.iloc[train_idx].reset_index(drop=True), df.iloc[test_idx].reset_index(drop=True)
+
+
+def augment_smiles(smiles: str, n: int = 5, max_attempts: int = 100) -> Optional[str]:
+
+    """Generate a random SMILES variant of the same molecule.
+
+    Uses RDKit's random SMILES generation, which shuffles atom order and
+    applies random kekulization. Returns None if no valid variant is found
+    after max_attempts.
+
+    Args:
+        smiles:      Input SMILES string to augment.
+        n:           Number of random variants to generate (default: 5).
+        max_attempts: Maximum attempts to find a valid variant (default: 100).
+    """
+    mol = MolFromSmiles(smiles)
+    if mol is None:
+        return None
+    
+    new_smiles_set = set()
+
+    for _ in range(max_attempts):
+        random_smi = Chem.MolToSmiles(mol, doRandom=True, canonical=False)
+        if random_smi and random_smi != smiles:
+            new_smiles_set.add(random_smi)
+            if len(new_smiles_set) >= n:
+                break
+
+    if new_smiles_set:
+        return list(new_smiles_set)
+    else:
+        return None
+
 
