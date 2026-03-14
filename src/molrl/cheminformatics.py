@@ -26,6 +26,7 @@ from jax import vmap
 from tqdm.auto import tqdm
 
 from molrl.chem_constants import COMMON_SOLVENTS, SMARTS_NEUTRALIZATION_PATTERNS, SMARTS_COMMON_SALTS
+from molrl.tokenizer import is_tokenizable
 
 # Suppress RDKit's internal deprecation warnings for MolStandardize submodules
 # We're using rdMolStandardize (the C++ module) which is the correct approach,
@@ -623,9 +624,10 @@ def augment_smiles(smiles: str, n: int = 5, max_attempts: int = 100) -> Optional
     for _ in range(max_attempts):
         random_smi = Chem.MolToSmiles(mol, doRandom=True, canonical=False)
         if random_smi and random_smi != smiles:
-            new_smiles_set.add(random_smi)
-            if len(new_smiles_set) >= n:
-                break
+            if is_tokenizable(random_smi):
+                new_smiles_set.add(random_smi)
+                if len(new_smiles_set) >= n:
+                    break
 
     if new_smiles_set:
         return list(new_smiles_set)
