@@ -38,6 +38,11 @@ def smiles_to_encoding(smi: str) -> list[int]:
     if "".join(tokens) != smi:
         raise TokenizationError(f"SMILES contains characters not in vocab: {smi!r}")
 
+    # Regex may capture characters (e.g. '+') that aren't in the vocab index.
+    unknown = [t for t in tokens if t not in VOCAB['token_indices']]
+    if unknown:
+        raise TokenizationError(f"Tokens not in vocab {unknown!r} in SMILES: {smi!r}")
+
     # +2 for start and end tokens
     if len(tokens) + 2 > VOCAB['max_len']:
         raise TokenizationError(
