@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 import optax
 
-from .models import AutoregressiveTransformer
+from .models import AutoregressiveTransformer, SmilesAutoencoder
 
 
 """Core training helpers for autoregressive transformer pretraining."""
@@ -75,3 +75,60 @@ def transformer_val_step(model: AutoregressiveTransformer, batch: Any, *, pad_to
 	"""Run one validation step without updating parameters."""
 	input_ids = _extract_input_ids(batch)
 	return transformer_autoregression_loss(model, input_ids, pad_token_id=pad_token_id, is_training=False)
+
+
+# ---------------------------------------------------------------------------
+# SmilesAutoencoder helpers
+# ---------------------------------------------------------------------------
+
+def autoencoder_reconstruction_loss(model: SmilesAutoencoder, input_ids: jnp.ndarray, *, pad_token_id: int = 0, eos_token_id: int = 35, is_training: bool = True) -> jnp.ndarray:
+	"""Mean per-molecule NLL for a batch (scalar output).
+
+	Each molecule's NLL is the sum of per-token cross-entropies divided by its
+	token length (all non-pad tokens, including EOS). The batch loss is the
+	mean over molecules.
+	"""
+	return _autoencoder_per_item_loss(model, input_ids, pad_token_id=pad_token_id, eos_token_id=eos_token_id, is_training=is_training).mean()
+
+
+def autoencoder_reconstruction_loss_per_item(model: SmilesAutoencoder, input_ids: jnp.ndarray, *, pad_token_id: int = 0, eos_token_id: int = 35, is_training: bool = True) -> jnp.ndarray:
+	"""Per-molecule NLL (one value per item in the batch)."""
+	return _autoencoder_per_item_loss(model, input_ids, pad_token_id=pad_token_id, eos_token_id=eos_token_id, is_training=is_training)
+
+
+def _autoencoder_per_item_loss(model: SmilesAutoencoder, input_ids: jnp.ndarray, *, pad_token_id: int, eos_token_id: int, is_training: bool) -> jnp.ndarray:
+	"""Shared implementation: returns [batch] NLL values, length-normalised per molecule."""
+	logits, _ = model(input_ids, input_ids, is_training=is_training)
+
+	# Teacher-forced GRU: logits[:, t] predicts token at t+1
+	pred_logits = logits[:, :-1, :]          # [batch, seq_len-1, vocab]
+	target_tokens = input_ids[:, 1:]         # [batch, seq_len-1]
+
+	targets_onehot = jax.nn.one_hot(target_tokens, num_classes=logits.shape[-1], dtype=pred_logits.dtype)
+	per_token_loss = optax.softmax_cross_entropy(pred_logits, targets_onehot)  # [batch, seq_len-1]
+
+	# Mask: count non-pad tokens in target (includes EOS, excludes PAD)
+	valid_mask = (target_tokens != pad_token_id).astype(jnp.float32)  # [batch, seq_len-1]
+	token_counts = jnp.maximum(valid_mask.sum(axis=1), 1.0)           # [batch]
+
+	return (per_token_loss * valid_mask).sum(axis=1) / token_counts    # [batch]
+
+
+@nnx.jit
+def autoencoder_train_step(model: SmilesAutoencoder, optimizer: nnx.Optimizer, batch: Any, *, pad_token_id: int = 0, eos_token_id: int = 35) -> jnp.ndarray:
+	"""One training step for the SmilesAutoencoder."""
+	input_ids = _extract_input_ids(batch)
+
+	def loss_fn(current_model):
+		return autoencoder_reconstruction_loss(current_model, input_ids, pad_token_id=pad_token_id, eos_token_id=eos_token_id, is_training=True)
+
+	loss, grads = nnx.value_and_grad(loss_fn, argnums=nnx.DiffState(0, nnx.Param))(model)
+	optimizer.update(model, grads)
+	return loss
+
+
+@nnx.jit
+def autoencoder_val_step(model: SmilesAutoencoder, batch: Any, *, pad_token_id: int = 0, eos_token_id: int = 35) -> jnp.ndarray:
+	"""One validation step for the SmilesAutoencoder."""
+	input_ids = _extract_input_ids(batch)
+	return autoencoder_reconstruction_loss(model, input_ids, pad_token_id=pad_token_id, eos_token_id=eos_token_id, is_training=False)
