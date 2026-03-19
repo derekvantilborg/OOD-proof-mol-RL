@@ -26,3 +26,14 @@ def smiles_validity(smiles_list):
     finally:
         RDLogger.EnableLog("rdApp.warning")
         RDLogger.EnableLog("rdApp.error")
+
+
+def smiles_novelty(generated_smiles, training_smiles):
+    training_set = set(training_smiles)
+    novel_count = sum(1 for smi in generated_smiles if smi not in training_set)
+    return novel_count / len(generated_smiles) if generated_smiles else 0.0
+
+
+def smiles_uniqueness(smiles_list):
+    unique_smiles = set(smiles_list)
+    return len(unique_smiles) / len(smiles_list) if smiles_list else 0.0
