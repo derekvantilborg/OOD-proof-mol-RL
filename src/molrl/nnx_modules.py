@@ -178,8 +178,8 @@ class SmilesDecoder(nnx.Module):
 class PredictionHead(nnx.Module):
 	"""MLP regression head: latent vector Z → scalar bioactivity prediction."""
 
-	def __init__(self, latent_dim: int = 128, hidden_dims: Sequence[int] = (256, 128),
-				 dropout_rate: float = 0.2, rngs: Optional[nnx.Rngs] = None):
+	def __init__(self, latent_dim: int = 128, hidden_dims: Sequence[int] = (512, 512, 512),
+				 dropout_rate: float = 0.1, rngs: Optional[nnx.Rngs] = None):
 		if rngs is None:
 			rngs = nnx.Rngs(0)
 
@@ -212,50 +212,3 @@ class PredictionHead(nnx.Module):
 			x = self.dropout(x, deterministic=deterministic)
 		return self.output(x).squeeze(-1)
 
-
-# ---------------------------------------------------------------------------
-# Composite models — wire the building blocks for each training stage
-# ---------------------------------------------------------------------------
-
-class SmilesAutoencoder(nnx.Module):
-	"""Encoder + Decoder. Pretrained on unlabeled SMILES (stage 1)."""
-
-	def __init__(self, encoder: SmilesEncoder, decoder: SmilesDecoder):
-		self.encoder = encoder
-		self.decoder = decoder
-
-	def __call__(self, input_ids: jnp.ndarray, target_ids: jnp.ndarray, is_training: bool = False):
-		"""Returns (logits, z)."""
-		z = self.encoder(input_ids, is_training=is_training)
-		logits = self.decoder(z, target_ids)
-		return logits, z
-
-
-class EncoderPredictor(nnx.Module):
-	"""Encoder + PredictionHead. Pretrained on labeled data (stage 2)."""
-
-	def __init__(self, encoder: SmilesEncoder, prediction_head: PredictionHead):
-		self.encoder = encoder
-		self.prediction_head = prediction_head
-
-	def __call__(self, input_ids: jnp.ndarray, is_training: bool = False):
-		"""Returns (predictions, z)."""
-		z = self.encoder(input_ids, is_training=is_training)
-		predictions = self.prediction_head(z, is_training=is_training)
-		return predictions, z
-
-
-class JointMolecularModel(nnx.Module):
-	"""Encoder + Decoder + PredictionHead. Finetuned jointly (stage 3)."""
-
-	def __init__(self, encoder: SmilesEncoder, decoder: SmilesDecoder, prediction_head: PredictionHead):
-		self.encoder = encoder
-		self.decoder = decoder
-		self.prediction_head = prediction_head
-
-	def __call__(self, input_ids: jnp.ndarray, target_ids: jnp.ndarray, is_training: bool = False):
-		"""Returns (logits, predictions, z)."""
-		z = self.encoder(input_ids, is_training=is_training)
-		logits = self.decoder(z, target_ids)
-		predictions = self.prediction_head(z, is_training=is_training)
-		return logits, predictions, z
