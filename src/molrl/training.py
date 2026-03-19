@@ -77,10 +77,6 @@ def transformer_val_step(model: AutoregressiveTransformer, batch: Any, *, pad_to
 	return transformer_autoregression_loss(model, input_ids, pad_token_id=pad_token_id, is_training=False)
 
 
-# ---------------------------------------------------------------------------
-# SmilesAutoencoder helpers
-# ---------------------------------------------------------------------------
-
 def autoencoder_reconstruction_loss(model: SmilesAutoencoder, input_ids: jnp.ndarray, *, pad_token_id: int = 0, eos_token_id: int = 35, is_training: bool = True) -> jnp.ndarray:
 	"""Mean per-molecule NLL for a batch (scalar output).
 
