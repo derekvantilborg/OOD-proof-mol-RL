@@ -58,7 +58,7 @@ def transformer_autoregression_loss(model: AutoregressiveTransformer, input_ids:
 
 
 @nnx.jit
-def train_step(model: AutoregressiveTransformer, optimizer: nnx.Optimizer, batch: Any, *, pad_token_id: Optional[int] = None) -> jnp.ndarray:
+def transformer_train_step(model: AutoregressiveTransformer, optimizer: nnx.Optimizer, batch: Any, *, pad_token_id: Optional[int] = None) -> jnp.ndarray:
 	"""Run one training step and update model parameters."""
 	input_ids = _extract_input_ids(batch)
 
@@ -71,7 +71,7 @@ def train_step(model: AutoregressiveTransformer, optimizer: nnx.Optimizer, batch
 
 
 @nnx.jit
-def val_step(model: AutoregressiveTransformer, batch: Any, *, pad_token_id: Optional[int] = None) -> jnp.ndarray:
+def transformer_val_step(model: AutoregressiveTransformer, batch: Any, *, pad_token_id: Optional[int] = None) -> jnp.ndarray:
 	"""Run one validation step without updating parameters."""
 	input_ids = _extract_input_ids(batch)
 	return transformer_autoregression_loss(model, input_ids, pad_token_id=pad_token_id, is_training=False)

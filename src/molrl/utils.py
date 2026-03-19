@@ -32,8 +32,8 @@ def _sample_tokens_compiled(model, tokens, key, t, eos_id, pad_id):
     return final_tokens
 
 
-def generate_molecules_temperature(model, max_seq_len: int, t: float, n: int, eos_id=35, pad_id=0):
-    """Generate n token sequences using autoregressive temperature sampling.
+def transformer_generate_smiles(model, max_seq_len: int, t: float, n: int, eos_id=35, pad_id=0):
+    """Generate n SMILES strings using autoregressive temperature sampling.
 
     Args:
         model: Trained AutoregressiveTransformer.
