@@ -106,13 +106,21 @@ def is_tokenizable(smi: str) -> bool:
 def encoding_to_smiles(encoding: list[int] | np.ndarray) -> Optional[str]:
     """Decode a token-index vector back to a SMILES string.
 
-    Strips padding, start, and end tokens. Returns None if the sequence
-    contains no tokens between start and end.
+    Truncates at the first EOS token, then strips padding and start tokens.
+    Returns None if the sequence contains no content tokens.
     """
     indices_token = VOCAB['indices_token']
+    end_idx = VOCAB['end_idx']
     special = {VOCAB['pad_idx'], VOCAB['start_idx'], VOCAB['end_idx']}
 
-    tokens = [indices_token[idx] for idx in encoding if idx not in special and idx in indices_token]
+    # truncate at first EOS so post-EOS garbage is ignored
+    truncated = []
+    for idx in encoding:
+        if idx == end_idx:
+            break
+        truncated.append(idx)
+
+    tokens = [indices_token[idx] for idx in truncated if idx not in special and idx in indices_token]
     return "".join(tokens) if tokens else None
 
 
