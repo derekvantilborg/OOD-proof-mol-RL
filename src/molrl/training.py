@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 import optax
 
-from .models import AutoregressiveTransformer, SmilesAutoencoder
+from .models import AutoregressiveTransformer, SmilesAutoencoder, EncoderPredictor
 
 
 """Core training helpers for autoregressive transformer pretraining."""
@@ -25,6 +25,19 @@ def _extract_input_ids(batch: Any) -> jnp.ndarray:
 	if input_ids is None:
 		raise ValueError("Could not extract input ids from batch")
 	return jnp.asarray(input_ids, dtype=jnp.int32)
+
+
+def _extract_targets(batch: Any) -> jnp.ndarray:
+	"""Extract targets from batch-like objects."""
+	if isinstance(batch, Mapping):
+		targets = batch.get("targets") or batch.get("labels")
+	elif isinstance(batch, (tuple, list)):
+		targets = batch[1]
+	else:
+		raise ValueError("Cannot extract targets from batch")
+	if targets is None:
+		raise ValueError("Could not extract targets from batch")
+	return targets
 
 
 def _make_attention_mask(input_ids: jnp.ndarray, pad_token_id: Optional[int]) -> Optional[jnp.ndarray]:
@@ -128,3 +141,30 @@ def autoencoder_val_step(model: SmilesAutoencoder, batch: Any, *, pad_token_id: 
 	"""One validation step for the SmilesAutoencoder."""
 	input_ids = _extract_input_ids(batch)
 	return autoencoder_reconstruction_loss(model, input_ids, pad_token_id=pad_token_id, eos_token_id=eos_token_id, is_training=False)
+
+
+@nnx.jit
+def oracle_train_step(model: EncoderPredictor, optimizer: nnx.Optimizer, batch: Any) -> jnp.ndarray:
+    """One training step for the oracle predictor."""
+    input_ids = _extract_input_ids(batch)
+    targets = _extract_targets(batch)
+    targets = jnp.asarray(targets, dtype=jnp.float32)
+
+    def loss_fn(current_model):
+        preds, z = current_model(input_ids, is_training=True)
+        return ((preds - targets) ** 2).mean()
+
+    loss, grads = nnx.value_and_grad(loss_fn, argnums=nnx.DiffState(0, nnx.Param))(model)
+    optimizer.update(model, grads)
+    return loss
+
+
+@nnx.jit
+def oracle_val_step(model: EncoderPredictor, batch: Any) -> jnp.ndarray:
+    """One validation step for the oracle predictor."""
+    input_ids = _extract_input_ids(batch)
+    targets = _extract_targets(batch)
+    targets = jnp.asarray(targets, dtype=jnp.float32)
+
+    preds, z = model(input_ids, is_training=False)
+    return ((preds - targets) ** 2).mean()
