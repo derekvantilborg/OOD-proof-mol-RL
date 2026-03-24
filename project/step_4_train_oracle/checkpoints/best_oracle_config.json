@@ -1,0 +1,31 @@
+{
+  "dataset": "chembl224_ki",
+  "batch_size": 256,
+  "n_epochs": 2000,
+  "early_stop_patience_evals": 5,
+  "model_save_path": "checkpoints/pretrained_oracle",
+  "vocab_size": 36,
+  "max_seq_len": 102,
+  "latent_dim": 128,
+  "encoder_emb_dim": 64,
+  "encoder_conv_channels": [
+    128,
+    256,
+    512
+  ],
+  "encoder_kernel_sizes": [
+    9,
+    9,
+    11
+  ],
+  "encoder_dropout_rate": 0.2,
+  "prediction_head_hidden_dims": [
+    512,
+    512,
+    512
+  ],
+  "prediction_head_dropout_rate": 0.03627648144417609,
+  "prediction_head_n_layers": 3,
+  "prediction_head_hidden_dim": 512,
+  "lr": 0.00012498934785079352
+}
