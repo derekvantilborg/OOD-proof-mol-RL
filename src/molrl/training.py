@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 import optax
 
-from .models import AutoregressiveTransformer, SmilesAutoencoder, EncoderPredictor
+from .models import AutoregressiveTransformer, JointMolecularModel, SmilesAutoencoder, EncoderPredictor
 
 
 """Core training helpers for autoregressive transformer pretraining."""
@@ -168,3 +168,61 @@ def oracle_val_step(model: EncoderPredictor, batch: Any) -> jnp.ndarray:
 
     preds, z = model(input_ids, is_training=False)
     return ((preds - targets) ** 2).mean()
+
+
+def joint_model_train_step(model: JointMolecularModel, optimizer: nnx.Optimizer, batch: Any, *, pad_token_id: Optional[int] = None, lambda_: float = 1.0) -> jnp.ndarray:
+    """One training step for the joint model (autoencoder + predictor)."""
+    input_ids = _extract_input_ids(batch)
+    targets = _extract_targets(batch)
+    targets = jnp.asarray(targets, dtype=jnp.float32)
+
+    def loss_fn(current_model):
+        logits, predictions, z = current_model(current_model, input_ids, pad_token_id=pad_token_id, is_training=True)
+		
+        pred_logits = logits[:, :-1, :]          # [batch, seq_len-1, vocab]
+        target_tokens = input_ids[:, 1:]         # [batch, seq_len-1]
+
+        targets_onehot = jax.nn.one_hot(target_tokens, num_classes=logits.shape[-1], dtype=pred_logits.dtype)
+        per_token_loss = optax.softmax_cross_entropy(pred_logits, targets_onehot)  # [batch, seq_len-1]
+
+        # Mask: count non-pad tokens in target (includes EOS, excludes PAD)
+        valid_mask = (target_tokens != pad_token_id).astype(jnp.float32)  # [batch, seq_len-1]
+        token_counts = jnp.maximum(valid_mask.sum(axis=1), 1.0)           # [batch]
+		
+        recon_loss = (per_token_loss * valid_mask).sum(axis=1) / token_counts    # [batch]
+        recon_loss = recon_loss.mean()  # mean over batch
+		
+        pred_loss = ((predictions - targets) ** 2).mean()
+
+        return recon_loss + lambda_ * pred_loss
+
+    loss, grads = nnx.value_and_grad(loss_fn, argnums=nnx.DiffState(0, nnx.Param))(model)
+    optimizer.update(model, grads)
+	
+    return loss
+
+
+def joint_model_val_step(model: JointMolecularModel, batch: Any, *, pad_token_id: Optional[int] = None, lambda_: float = 1.0) -> jnp.ndarray:
+    """One validation step for the joint model (autoencoder + predictor)."""
+    input_ids = _extract_input_ids(batch)
+    targets = _extract_targets(batch)
+    targets = jnp.asarray(targets, dtype=jnp.float32)
+
+    logits, predictions, z = model(input_ids, pad_token_id=pad_token_id, is_training=False)
+        
+    pred_logits = logits[:, :-1, :]          # [batch, seq_len-1, vocab]
+    target_tokens = input_ids[:, 1:]         # [batch, seq_len-1]
+
+    targets_onehot = jax.nn.one_hot(target_tokens, num_classes=logits.shape[-1], dtype=pred_logits.dtype)
+    per_token_loss = optax.softmax_cross_entropy(pred_logits, targets_onehot)  # [batch, seq_len-1]
+
+    # Mask: count non-pad tokens in target (includes EOS, excludes PAD)
+    valid_mask = (target_tokens != pad_token_id).astype(jnp.float32)  # [batch, seq_len-1]
+    token_counts = jnp.maximum(valid_mask.sum(axis=1), 1.0)           # [batch]
+        
+    recon_loss = (per_token_loss * valid_mask).sum(axis=1) / token_counts    # [batch]
+    recon_loss = recon_loss.mean()  # mean over batch
+        
+    pred_loss = ((predictions - targets) ** 2).mean()
+
+    return recon_loss + lambda_ * pred_loss
