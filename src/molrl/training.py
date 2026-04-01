@@ -232,9 +232,9 @@ def joint_model_predict(model: JointMolecularModel, batch: Any, *, pad_token_id:
 
     valid_mask = (target_tokens != pad_token_id).astype(jnp.float32)
     token_counts = jnp.maximum(valid_mask.sum(axis=1), 1.0)
-    recon_loss = ((per_token_loss * valid_mask).sum(axis=1) / token_counts).mean()
+    per_item_recon_loss = (per_token_loss * valid_mask).sum(axis=1) / token_counts  # [batch]
 
-    unfamiliarity = jnp.log(recon_loss)
+    unfamiliarity = jnp.log(per_item_recon_loss)  # [batch]
 
     pred_tokens = jnp.argmax(logits, axis=-1)
     input_smiles = [encoding_to_smiles(input_ids[j].tolist()) for j in range(input_ids.shape[0])]
