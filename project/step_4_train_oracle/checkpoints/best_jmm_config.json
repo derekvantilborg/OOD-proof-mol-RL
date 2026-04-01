@@ -1,0 +1,8 @@
+{
+  "batch_size": 256,
+  "n_epochs": 200,
+  "early_stop_patience_evals": 10,
+  "lambda_": 1.0,
+  "lr": 1e-05,
+  "model_save_path": "checkpoints/finetuned_jmm"
+}
